@@ -1,5 +1,5 @@
 #include <iostream>
-
+#include <numeric>
 #include <boost/thread/thread.hpp>
 #include <pcl/range_image/range_image.h>
 #include <pcl/io/pcd_io.h>
@@ -267,53 +267,89 @@ main (int argc, char** argv)
 
   pcl::KdTreeFLANN<pcl::Narf36> kdtree;
   kdtree.setPointRepresentation (boost::make_shared<NARFpr>());
-  //pcl::PointCloud<pcl::Narf36>::Ptr tar_narf_descriptors_ptr (&tar_narf_descriptors);
-  //cout << "NARF descriptor cloud pointer created.\n";
   kdtree.setInputCloud(tar_narf_descriptors_ptr);
   int k = 5;
-  std::vector<int> nkn_indices(k);
-  std::vector<float> nkn_sq_dists(k);
-  cout << "Searching for " << k << " nearest neighbors at: \nx: " 
-      << src_narf_descriptors.points[1].x
-      << "\ny: " << src_narf_descriptors.points[1].y
-      << "\nz: " << src_narf_descriptors.points[1].z;
-  kdtree.nearestKSearch (src_narf_descriptors.points[1], k, nkn_indices, nkn_sq_dists);
-  for (size_t i = 0; i < nkn_indices.size(); ++i)
-      cout << "index: " << nkn_indices[i]
-          << "     squared distance: " << nkn_sq_dists[i] << "\n";
+  std::vector<int> nkn_indices_i(k);
+  std::vector<float> nkn_sq_dists_i(k);
+  std::vector<int> nkn_indices(src_narf_descriptors.size());
+  std::vector<float> nkn_sq_dists(src_narf_descriptors.size());
+  for(size_t i = 0; i < src_narf_descriptors.size(); ++i)
+  {
+    cout << "Searching for " << k << " nearest neighbors of source descriptor " << i
+        << ":\nx: " << src_narf_descriptors.points[i].x
+        << "\ny: " << src_narf_descriptors.points[i].y
+        << "\nz: " << src_narf_descriptors.points[i].z << "\n";
+    kdtree.nearestKSearch (src_narf_descriptors.points[i], k, nkn_indices_i, nkn_sq_dists_i);
+    nkn_indices[i] = nkn_indices_i[0];
+    nkn_sq_dists[i] = nkn_sq_dists_i[0];
+    for (size_t j = 0; j < k; ++j)
+        cout << "index: " << nkn_indices_i[j]
+            << "     squared distance: " << nkn_sq_dists_i[j] << "\n";
+  }
+  cout << "Results:\n";
+  for(size_t i = 0; i < src_narf_descriptors.size(); ++i)
+  {
+      cout << "Source descriptor " << i << " corresponds to target descriptor "
+          << nkn_indices[i]
+          << " with a squared distance of " << nkn_sq_dists[i] << "\n";
+  }
+
+
+  //--------------------------------------
+  //------Reject bad correspondences------
+  //--------------------------------------
+
+  float avg_sq_dist = std::accumulate(nkn_sq_dists.begin(),nkn_sq_dists.end(),0.0)/nkn_sq_dists.size();
+  cout << "Average nearest neighbor squared distance: " << avg_sq_dist << "\n";
+
+  std::vector<int> src_corr_indices;
+  std::vector<int> tar_corr_indices;
+
+  for(size_t i = 0; i < src_narf_descriptors.size(); ++i)
+  {
+      if (nkn_sq_dists[i] < avg_sq_dist)
+      {
+          src_corr_indices.push_back(i);
+          tar_corr_indices.push_back(nkn_indices[i]);
+      }
+  }
+
+  cout << "Rejecting correspondences with above average distances:\n";
+  for(size_t i = 0; i < src_corr_indices.size(); ++i)
+  {
+      cout << "Source descriptor " << src_corr_indices[i] << " corresponds to target descriptor "
+          << tar_corr_indices[i]
+          << " with a squared distance of " << nkn_sq_dists[src_corr_indices[i]] << "\n";
+  }
+
+  //TODO: reject duplicate correspondences
 
 
   //--------------------------------------
   //------Add features to visualizer------
   //--------------------------------------
 
-  pcl::PointCloud<pcl::PointXYZ>::Ptr src_pt_ptr (new pcl::PointCloud<pcl::PointXYZ>);
-  pcl::PointCloud<pcl::PointXYZ>& src_pt = *src_pt_ptr;
-  src_pt.points.resize (1);
-  src_pt.width = 1;
-  src_pt.height = 1;
-  src_pt.points[0].x = src_narf_descriptors.points[1].x;
-  src_pt.points[0].y = src_narf_descriptors.points[1].y;
-  src_pt.points[0].z = src_narf_descriptors.points[1].z;
-  pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZ> src_pt_color_handler (src_pt_ptr, 255, 0, 0);
-  viewer.addPointCloud<pcl::PointXYZ> (src_pt_ptr, src_pt_color_handler, "source point", v1);
-  viewer.setPointCloudRenderingProperties (pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 8, "source point");
- 
-
-  pcl::PointCloud<pcl::PointXYZ>::Ptr neighs_ptr (new pcl::PointCloud<pcl::PointXYZ>);
-  pcl::PointCloud<pcl::PointXYZ>& neighs = *neighs_ptr;
-  neighs.points.resize (k);
-  neighs.width = k;
-  neighs.height = 1;
-  for (size_t i=0; i<k; ++i)
+  pcl::PointXYZ src_pt;
+  for (size_t i; i < src_corr_indices.size(); ++i)
   {
-    neighs.points[i].x = tar_narf_descriptors.points[nkn_indices[i]].x;
-    neighs.points[i].y = tar_narf_descriptors.points[nkn_indices[i]].y;
-    neighs.points[i].z = tar_narf_descriptors.points[nkn_indices[i]].z;
+      src_pt.x = src_narf_descriptors.points[src_corr_indices[i]].x;
+      src_pt.y = src_narf_descriptors.points[src_corr_indices[i]].y;
+      src_pt.z = src_narf_descriptors.points[src_corr_indices[i]].z;
+      std::stringstream name;
+      name << "source point " << i;
+      viewer.addSphere<pcl::PointXYZ> (src_pt, 0.02, 255, 0, 0, name.str(), v1);
   }
-  pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZ> neighs_color_handler (neighs_ptr, 255, 0, 0);
-  viewer.addPointCloud<pcl::PointXYZ> (neighs_ptr, neighs_color_handler, "target neighbors", v2);
-  viewer.setPointCloudRenderingProperties (pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 8, "target neighbors");
+  
+  pcl::PointXYZ corr_pt;
+  for (size_t i; i < src_corr_indices.size(); ++i)
+  {
+      corr_pt.x = tar_narf_descriptors.points[tar_corr_indices[i]].x;
+      corr_pt.y = tar_narf_descriptors.points[tar_corr_indices[i]].y;
+      corr_pt.z = tar_narf_descriptors.points[tar_corr_indices[i]].z;
+      std::stringstream name;
+      name << "corresponding point " << i;
+      viewer.addSphere<pcl::PointXYZ> (corr_pt, 0.02, 255, 0, 0, name.str(), v2);
+  }
 
   //--------------------
   // -----Main loop-----
