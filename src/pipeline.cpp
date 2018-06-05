@@ -9,8 +9,9 @@
 #include <pcl/keypoints/narf_keypoint.h>
 #include <pcl/features/narf_descriptor.h>
 #include <pcl/console/parse.h>
-
 #include <pcl/point_types.h>
+#include <pcl/point_representation.h>
+#include <pcl/kdtree/kdtree_flann.h>
 
 typedef pcl::PointXYZ PointType;
 
@@ -53,6 +54,22 @@ setViewerPose (pcl::visualization::PCLVisualizer& viewer, const Eigen::Affine3f&
                             look_at_vector[0], look_at_vector[1], look_at_vector[2],
                             up_vector[0], up_vector[1], up_vector[2]);
 }
+
+class NARFpr : public pcl::PointRepresentation<pcl::Narf36>
+{
+    public:
+        NARFpr()
+        {
+            this->nr_dimensions_ = 36;
+        }
+
+        void copyToFloatArray (const pcl::Narf36 &narf, float *out) const
+        {
+            for(int i=0; i<36; ++i)
+                out[i] = narf.descriptor[i];
+        }
+};
+
 
 // --------------
 // -----Main-----
@@ -237,11 +254,67 @@ main (int argc, char** argv)
   pcl::NarfDescriptor tar_narf_descriptor (&tar_range_image, &tar_keypoint_indices2);
   tar_narf_descriptor.getParameters ().support_size = support_size;
   tar_narf_descriptor.getParameters ().rotation_invariant = rotation_invariant;
-  pcl::PointCloud<pcl::Narf36> tar_narf_descriptors;
+  pcl::PointCloud<pcl::Narf36>::Ptr tar_narf_descriptors_ptr (new pcl::PointCloud<pcl::Narf36>);
+  pcl::PointCloud<pcl::Narf36>& tar_narf_descriptors = *tar_narf_descriptors_ptr;
   tar_narf_descriptor.compute (tar_narf_descriptors);
   cout << "Extracted "<<tar_narf_descriptors.size ()<<" descriptors for "
                       <<tar_keypoint_indices.points.size ()<< " keypoints in target cloud.\n";
   
+
+  //------------------------------------------------------------------
+  //------Use kd-tree nearest neighbor search on NARF descriptors------
+  //-------------------------------------------------------------------
+
+  pcl::KdTreeFLANN<pcl::Narf36> kdtree;
+  kdtree.setPointRepresentation (boost::make_shared<NARFpr>());
+  //pcl::PointCloud<pcl::Narf36>::Ptr tar_narf_descriptors_ptr (&tar_narf_descriptors);
+  //cout << "NARF descriptor cloud pointer created.\n";
+  kdtree.setInputCloud(tar_narf_descriptors_ptr);
+  int k = 5;
+  std::vector<int> nkn_indices(k);
+  std::vector<float> nkn_sq_dists(k);
+  cout << "Searching for " << k << " nearest neighbors at: \nx: " 
+      << src_narf_descriptors.points[1].x
+      << "\ny: " << src_narf_descriptors.points[1].y
+      << "\nz: " << src_narf_descriptors.points[1].z;
+  kdtree.nearestKSearch (src_narf_descriptors.points[1], k, nkn_indices, nkn_sq_dists);
+  for (size_t i = 0; i < nkn_indices.size(); ++i)
+      cout << "index: " << nkn_indices[i]
+          << "     squared distance: " << nkn_sq_dists[i] << "\n";
+
+
+  //--------------------------------------
+  //------Add features to visualizer------
+  //--------------------------------------
+
+  pcl::PointCloud<pcl::PointXYZ>::Ptr src_pt_ptr (new pcl::PointCloud<pcl::PointXYZ>);
+  pcl::PointCloud<pcl::PointXYZ>& src_pt = *src_pt_ptr;
+  src_pt.points.resize (1);
+  src_pt.width = 1;
+  src_pt.height = 1;
+  src_pt.points[0].x = src_narf_descriptors.points[1].x;
+  src_pt.points[0].y = src_narf_descriptors.points[1].y;
+  src_pt.points[0].z = src_narf_descriptors.points[1].z;
+  pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZ> src_pt_color_handler (src_pt_ptr, 255, 0, 0);
+  viewer.addPointCloud<pcl::PointXYZ> (src_pt_ptr, src_pt_color_handler, "source point", v1);
+  viewer.setPointCloudRenderingProperties (pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 8, "source point");
+ 
+
+  pcl::PointCloud<pcl::PointXYZ>::Ptr neighs_ptr (new pcl::PointCloud<pcl::PointXYZ>);
+  pcl::PointCloud<pcl::PointXYZ>& neighs = *neighs_ptr;
+  neighs.points.resize (k);
+  neighs.width = k;
+  neighs.height = 1;
+  for (size_t i=0; i<k; ++i)
+  {
+    neighs.points[i].x = tar_narf_descriptors.points[nkn_indices[i]].x;
+    neighs.points[i].y = tar_narf_descriptors.points[nkn_indices[i]].y;
+    neighs.points[i].z = tar_narf_descriptors.points[nkn_indices[i]].z;
+  }
+  pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZ> neighs_color_handler (neighs_ptr, 255, 0, 0);
+  viewer.addPointCloud<pcl::PointXYZ> (neighs_ptr, neighs_color_handler, "target neighbors", v2);
+  viewer.setPointCloudRenderingProperties (pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 8, "target neighbors");
+
   //--------------------
   // -----Main loop-----
   //--------------------
