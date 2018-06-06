@@ -12,6 +12,8 @@
 #include <pcl/point_types.h>
 #include <pcl/point_representation.h>
 #include <pcl/kdtree/kdtree_flann.h>
+#include <pcl/correspondence.h>
+#include <pcl/registration/correspondence_rejection_features.h>
 
 typedef pcl::PointXYZ PointType;
 
@@ -163,15 +165,11 @@ main (int argc, char** argv)
   // -----Open 3D viewer and add point cloud-----
   // --------------------------------------------
   pcl::visualization::PCLVisualizer viewer ("3D Viewer");
-  int v1 (0);
-  int v2 (1);
-  viewer.createViewPort(0.0, 0.0, 0.5, 1.0, v1);
-  viewer.createViewPort(0.5, 0.0, 1.0, 1.0, v2);
-  viewer.setBackgroundColor (1, 1, 1);
-  pcl::visualization::PointCloudColorHandlerCustom<pcl::PointWithRange> src_range_image_color_handler (src_range_image_ptr, 0, 0, 0);
-  pcl::visualization::PointCloudColorHandlerCustom<pcl::PointWithRange> tar_range_image_color_handler (tar_range_image_ptr, 0, 0, 0);
-  viewer.addPointCloud (src_range_image_ptr, src_range_image_color_handler, "source range image", v1);
-  viewer.addPointCloud (tar_range_image_ptr, tar_range_image_color_handler, "target range image", v2);
+  viewer.setBackgroundColor (0, 0, 0);
+  pcl::visualization::PointCloudColorHandlerCustom<pcl::PointWithRange> src_range_image_color_handler (src_range_image_ptr, 255, 255, 0);
+  pcl::visualization::PointCloudColorHandlerCustom<pcl::PointWithRange> tar_range_image_color_handler (tar_range_image_ptr, 0, 255, 255);
+  viewer.addPointCloud (src_range_image_ptr, src_range_image_color_handler, "source range image");
+  viewer.addPointCloud (tar_range_image_ptr, tar_range_image_color_handler, "target range image");
   viewer.setPointCloudRenderingProperties (pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 1, "source range image");
   viewer.setPointCloudRenderingProperties (pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 1, "target range image");
   //viewer.addCoordinateSystem (1.0f, "global");
@@ -199,12 +197,6 @@ main (int argc, char** argv)
   narf_keypoint_detector.compute (tar_keypoint_indices);
   std::cout << "Found "<<tar_keypoint_indices.points.size ()<<" key points in target cloud.\n";
   
-  // ----------------------------------------------
-  // -----Show keypoints in range image widget-----
-  // ----------------------------------------------
-  //for (size_t i=0; i<src_keypoint_indices.points.size (); ++i)
-    //range_image_widget.markPoint (src_keypoint_indices.points[i]%range_image.width,
-                                  //src_keypoint_indices.points[i]/range_image.width);
   
   // -------------------------------------
   // -----Show keypoints in 3D viewer-----
@@ -217,7 +209,7 @@ main (int argc, char** argv)
   for (size_t i=0; i<src_keypoint_indices.points.size (); ++i)
     src_keypoints.points[i].getVector3fMap () = src_range_image.points[src_keypoint_indices.points[i]].getVector3fMap ();
   pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZ> src_keypoints_color_handler (src_keypoints_ptr, 0, 255, 0);
-  viewer.addPointCloud<pcl::PointXYZ> (src_keypoints_ptr, src_keypoints_color_handler, "source keypoints", v1);
+  viewer.addPointCloud<pcl::PointXYZ> (src_keypoints_ptr, src_keypoints_color_handler, "source keypoints");
   viewer.setPointCloudRenderingProperties (pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 7, "source keypoints");
  
 
@@ -229,7 +221,7 @@ main (int argc, char** argv)
   for (size_t i=0; i<tar_keypoint_indices.points.size (); ++i)
     tar_keypoints.points[i].getVector3fMap () = tar_range_image.points[tar_keypoint_indices.points[i]].getVector3fMap ();
   pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZ> tar_keypoints_color_handler (tar_keypoints_ptr, 0, 255, 0);
-  viewer.addPointCloud<pcl::PointXYZ> (tar_keypoints_ptr, tar_keypoints_color_handler, "target keypoints", v2);
+  viewer.addPointCloud<pcl::PointXYZ> (tar_keypoints_ptr, tar_keypoints_color_handler, "target keypoints");
   viewer.setPointCloudRenderingProperties (pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 7, "target keypoints");
 
   // ------------------------------------------------------
@@ -299,27 +291,51 @@ main (int argc, char** argv)
   //------Reject bad correspondences------
   //--------------------------------------
 
+  // Create original correspondences object
+  pcl::Correspondences original_correspondences;
+
+  // fill original correspondences object with indices and distances
+  for (size_t i; i < src_narf_descriptors.size(); ++i)
+  {
+      pcl::Correspondence correspondence(i, nkn_indices[i], nkn_sq_dists[i]);
+      original_correspondences.push_back(correspondence);
+  }
+
+  // Create filtered correspondences object
+  pcl::CorrespondencesPtr remaining_correspondences_ptr (new pcl::Correspondences);
+  pcl::Correspondences remaining_correspondences = *remaining_correspondences_ptr;
+  
+  // Create correspondence rejector object
+  pcl::registration::CorrespondenceRejectorFeatures rejector;
+  // set feature representation
+  // set input source
+  // set input target
+  // set input correspondences
+  // get filtered correspondences / apply rejection (compare these two functions?)
+
+
   float avg_sq_dist = std::accumulate(nkn_sq_dists.begin(),nkn_sq_dists.end(),0.0)/nkn_sq_dists.size();
   cout << "Average nearest neighbor squared distance: " << avg_sq_dist << "\n";
 
   std::vector<int> src_corr_indices;
   std::vector<int> tar_corr_indices;
 
+  float thresh = 0.5;
+
   for(size_t i = 0; i < src_narf_descriptors.size(); ++i)
   {
-      if (nkn_sq_dists[i] < avg_sq_dist)
+      if (nkn_sq_dists[i] < thresh)
       {
-          src_corr_indices.push_back(i);
-          tar_corr_indices.push_back(nkn_indices[i]);
+          pcl::Correspondence correspondence(i, nkn_indices[i], nkn_sq_dists[i]);
+          remaining_correspondences.push_back(correspondence);
       }
   }
-
-  cout << "Rejecting correspondences with above average distances:\n";
-  for(size_t i = 0; i < src_corr_indices.size(); ++i)
+  cout << "Rejecting bad correspondences:\n";
+  for(size_t i = 0; i < remaining_correspondences.size(); ++i)
   {
-      cout << "Source descriptor " << src_corr_indices[i] << " corresponds to target descriptor "
-          << tar_corr_indices[i]
-          << " with a squared distance of " << nkn_sq_dists[src_corr_indices[i]] << "\n";
+      cout << "Source descriptor " << remaining_correspondences[i].index_query << " corresponds to target descriptor "
+          << remaining_correspondences[i].index_match
+          << " with a squared distance of " << remaining_correspondences[i].distance << "\n";
   }
 
   //TODO: reject duplicate correspondences
@@ -330,25 +346,26 @@ main (int argc, char** argv)
   //--------------------------------------
 
   pcl::PointXYZ src_pt;
-  for (size_t i; i < src_corr_indices.size(); ++i)
-  {
-      src_pt.x = src_narf_descriptors.points[src_corr_indices[i]].x;
-      src_pt.y = src_narf_descriptors.points[src_corr_indices[i]].y;
-      src_pt.z = src_narf_descriptors.points[src_corr_indices[i]].z;
-      std::stringstream name;
-      name << "source point " << i;
-      viewer.addSphere<pcl::PointXYZ> (src_pt, 0.02, 255, 0, 0, name.str(), v1);
-  }
-  
   pcl::PointXYZ corr_pt;
-  for (size_t i; i < src_corr_indices.size(); ++i)
+  for (size_t i; i < remaining_correspondences.size(); ++i)
   {
-      corr_pt.x = tar_narf_descriptors.points[tar_corr_indices[i]].x;
-      corr_pt.y = tar_narf_descriptors.points[tar_corr_indices[i]].y;
-      corr_pt.z = tar_narf_descriptors.points[tar_corr_indices[i]].z;
-      std::stringstream name;
-      name << "corresponding point " << i;
-      viewer.addSphere<pcl::PointXYZ> (corr_pt, 0.02, 255, 0, 0, name.str(), v2);
+      src_pt.x = src_narf_descriptors.points[remaining_correspondences[i].index_query].x;
+      src_pt.y = src_narf_descriptors.points[remaining_correspondences[i].index_query].y;
+      src_pt.z = src_narf_descriptors.points[remaining_correspondences[i].index_query].z;
+      std::stringstream name1;
+      name1 << "source point " << i;
+      viewer.addSphere<pcl::PointXYZ> (src_pt, 0.02, 255, 0, 0, name1.str());
+  
+      corr_pt.x = tar_narf_descriptors.points[remaining_correspondences[i].index_match].x;
+      corr_pt.y = tar_narf_descriptors.points[remaining_correspondences[i].index_match].y;
+      corr_pt.z = tar_narf_descriptors.points[remaining_correspondences[i].index_match].z;
+      std::stringstream name2;
+      name2 << "corresponding point " << i;
+      viewer.addSphere<pcl::PointXYZ> (corr_pt, 0.02, 0, 0, 255, name2.str());
+
+      std::stringstream name3;
+      name3 << "line" << i;
+      viewer.addLine<pcl::PointXYZ, pcl::PointXYZ> (src_pt, corr_pt, 255, 0, 255, name3.str());
   }
 
   //--------------------
