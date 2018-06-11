@@ -1,30 +1,30 @@
 #include <iostream>
 #include <numeric>
 #include <boost/thread/thread.hpp>
-#include <pcl/range_image/range_image.h>
 #include <pcl/io/pcd_io.h>
-#include <pcl/visualization/range_image_visualizer.h>
 #include <pcl/visualization/pcl_visualizer.h>
-#include <pcl/features/range_image_border_extractor.h>
-#include <pcl/keypoints/narf_keypoint.h>
-#include <pcl/features/narf_descriptor.h>
 #include <pcl/console/parse.h>
 #include <pcl/point_types.h>
-#include <pcl/point_representation.h>
 #include <pcl/kdtree/kdtree_flann.h>
 #include <pcl/correspondence.h>
 #include <pcl/registration/correspondence_rejection_features.h>
+#include <pcl/common/io.h>
+#include <pcl/keypoints/sift_keypoint.h>
+#include <pcl/features/normal_3d.h>
+#include <pcl/features/fpfh.h>
+#include <pcl/registration/correspondence_estimation.h>
+#include <pcl/filters/voxel_grid.h>
 
-typedef pcl::PointXYZ PointType;
 
 // --------------------
 // -----Parameters-----
 // --------------------
-float angular_resolution = 0.5f;
-float support_size = 0.2f;
-pcl::RangeImage::CoordinateFrame coordinate_frame = pcl::RangeImage::CAMERA_FRAME;
-bool setUnseenToMaxRange = false;
-bool rotation_invariant = true;
+const float min_scale = 0.01f;
+const int n_octaves = 3;
+const int n_scales_per_octave = 4;
+const float min_contrast = 0.001f;
+
+
 
 // --------------
 // -----Help-----
@@ -32,16 +32,9 @@ bool rotation_invariant = true;
 void 
 printUsage (const char* progName)
 {
-  std::cout << "\n\nUsage: "<<progName<<" [options] <scene.pcd>\n\n"
+  std::cout << "\n\nUsage: "<<progName<<" [options] <file.pcd> <file.pcd>\n\n"
             << "Options:\n"
             << "-------------------------------------------\n"
-            << "-r <float>   angular resolution in degrees (default "<<angular_resolution<<")\n"
-            << "-c <int>     coordinate frame (default "<< (int)coordinate_frame<<")\n"
-            << "-m           Treat all unseen points to max range\n"
-            << "-s <float>   support size for the interest points (diameter of the used sphere - "
-                                                                  "default "<<support_size<<")\n"
-            << "-o <0/1>     switch rotational invariant version of the feature on/off"
-            <<               " (default "<< (int)rotation_invariant<<")\n"
             << "-h           this help\n"
             << "\n\n";
 }
@@ -57,20 +50,6 @@ setViewerPose (pcl::visualization::PCLVisualizer& viewer, const Eigen::Affine3f&
                             up_vector[0], up_vector[1], up_vector[2]);
 }
 
-class NARFpr : public pcl::PointRepresentation<pcl::Narf36>
-{
-    public:
-        NARFpr()
-        {
-            this->nr_dimensions_ = 36;
-        }
-
-        void copyToFloatArray (const pcl::Narf36 &narf, float *out) const
-        {
-            for(int i=0; i<36; ++i)
-                out[i] = narf.descriptor[i];
-        }
-};
 
 
 // --------------
@@ -87,32 +66,14 @@ main (int argc, char** argv)
     printUsage (argv[0]);
     return 0;
   }
-  if (pcl::console::find_argument (argc, argv, "-m") >= 0)
-  {
-    setUnseenToMaxRange = true;
-    cout << "Setting unseen values in range image to maximum range readings.\n";
-  }
-  if (pcl::console::parse (argc, argv, "-o", rotation_invariant) >= 0)
-    cout << "Switching rotation invariant feature version "<< (rotation_invariant ? "on" : "off")<<".\n";
-  int tmp_coordinate_frame;
-  if (pcl::console::parse (argc, argv, "-c", tmp_coordinate_frame) >= 0)
-  {
-    coordinate_frame = pcl::RangeImage::CoordinateFrame (tmp_coordinate_frame);
-    cout << "Using coordinate frame "<< (int)coordinate_frame<<".\n";
-  }
-  if (pcl::console::parse (argc, argv, "-s", support_size) >= 0)
-    cout << "Setting support size to "<<support_size<<".\n";
-  if (pcl::console::parse (argc, argv, "-r", angular_resolution) >= 0)
-    cout << "Setting angular resolution to "<<angular_resolution<<"deg.\n";
-  angular_resolution = pcl::deg2rad (angular_resolution);
   
-  // ------------------------------------------------------------------
-  // -----Read pcd file or create example point cloud if not given-----
-  // ------------------------------------------------------------------
-  pcl::PointCloud<PointType>::Ptr source_cloud_ptr (new pcl::PointCloud<PointType>);
-  pcl::PointCloud<PointType>::Ptr target_cloud_ptr (new pcl::PointCloud<PointType>);
-  pcl::PointCloud<PointType>& source_cloud = *source_cloud_ptr;
-  pcl::PointCloud<PointType>& target_cloud = *target_cloud_ptr;
+  // -----------------------
+  // -----Read pcd file-----
+  // -----------------------
+  pcl::PointCloud<pcl::PointXYZ>::Ptr source_cloud_ptr (new pcl::PointCloud<pcl::PointXYZ>);
+  pcl::PointCloud<pcl::PointXYZ>::Ptr target_cloud_ptr (new pcl::PointCloud<pcl::PointXYZ>);
+  pcl::PointCloud<pcl::PointXYZ>& source_cloud = *source_cloud_ptr;
+  pcl::PointCloud<pcl::PointXYZ>& target_cloud = *target_cloud_ptr;
   Eigen::Affine3f scene_sensor_pose (Eigen::Affine3f::Identity ());
   std::vector<int> pcd_filename_indices = pcl::console::parse_file_extension_argument (argc, argv, "pcd");
 
@@ -143,229 +104,162 @@ main (int argc, char** argv)
     return 0;
   }
   
-  // -----------------------------------------------
-  // -----Create RangeImage from the PointCloud-----
-  // -----------------------------------------------
-  float noise_level = 0.0;
-  float min_range = 0.0f;
-  int border_size = 1;
-  boost::shared_ptr<pcl::RangeImage> src_range_image_ptr (new pcl::RangeImage);
-  boost::shared_ptr<pcl::RangeImage> tar_range_image_ptr (new pcl::RangeImage);
-  pcl::RangeImage& src_range_image = *src_range_image_ptr;   
-  pcl::RangeImage& tar_range_image = *tar_range_image_ptr;   
-  src_range_image.createFromPointCloud (source_cloud, angular_resolution, pcl::deg2rad (360.0f), pcl::deg2rad (180.0f),
-                                   scene_sensor_pose, coordinate_frame, noise_level, min_range, border_size);
-  tar_range_image.createFromPointCloud (target_cloud, angular_resolution, pcl::deg2rad (360.0f), pcl::deg2rad (180.0f),
-                                   scene_sensor_pose, coordinate_frame, noise_level, min_range, border_size);
-  if (setUnseenToMaxRange)
-    src_range_image.setUnseenToMaxRange ();
-    tar_range_image.setUnseenToMaxRange ();
+  // Downsample input clouds
+  /*
+  pcl::VoxelGrid<pcl::PointXYZ> sor;
+  sor.setLeafSize (0.01f, 0.01f, 0.01f);
+  sor.setInputCloud(source_cloud_ptr);
+  sor.filter(source_cloud);
+  sor.setInputCloud(target_cloud_ptr);
+  sor.filter(target_cloud);
+  */
+
+  // Estimate cloud normals
+  cout << "Computing source cloud normals\n";
+  pcl::NormalEstimation<pcl::PointXYZ, pcl::PointNormal> ne;
+  pcl::PointCloud<pcl::PointNormal>::Ptr src_normals_ptr (new pcl::PointCloud<pcl::PointNormal>);
+  pcl::PointCloud<pcl::PointNormal>& src_normals = *src_normals_ptr;
+  pcl::search::KdTree<pcl::PointXYZ>::Ptr tree_n (new pcl::search::KdTree<pcl::PointXYZ>());
+  ne.setInputCloud(source_cloud_ptr);
+  ne.setSearchMethod(tree_n);
+  ne.setRadiusSearch(0.05);
+  ne.compute(*src_normals_ptr);
+  cout << "Success\n";
+  for(size_t i = 0;  i < src_normals.points.size(); ++i)
+  {
+      src_normals.points[i].x = source_cloud.points[i].x;
+      src_normals.points[i].y = source_cloud.points[i].y;
+      src_normals.points[i].z = source_cloud.points[i].z;
+  }
+
+  cout << "Computing target cloud normals\n";
+  pcl::PointCloud<pcl::PointNormal>::Ptr tar_normals_ptr (new pcl::PointCloud<pcl::PointNormal>);
+  pcl::PointCloud<pcl::PointNormal>& tar_normals = *tar_normals_ptr;
+  ne.setInputCloud(target_cloud_ptr);
+  ne.compute(*tar_normals_ptr);
+  cout << "Success\n";
+  for(size_t i = 0;  i < tar_normals.points.size(); ++i)
+  {
+      tar_normals.points[i].x = target_cloud.points[i].x;
+      tar_normals.points[i].y = target_cloud.points[i].y;
+      tar_normals.points[i].z = target_cloud.points[i].z;
+  }
+
+  // Estimate the SIFT keypoints
+  pcl::SIFTKeypoint<pcl::PointNormal, pcl::PointWithScale> sift;
+  pcl::PointCloud<pcl::PointWithScale>::Ptr src_keypoints_ptr (new pcl::PointCloud<pcl::PointWithScale>);
+  pcl::PointCloud<pcl::PointWithScale>& src_keypoints = *src_keypoints_ptr;
+  pcl::search::KdTree<pcl::PointNormal>::Ptr tree(new pcl::search::KdTree<pcl::PointNormal> ());
+  sift.setSearchMethod(tree);
+  sift.setScales(min_scale, n_octaves, n_scales_per_octave);
+  sift.setMinimumContrast(min_contrast);
+  sift.setInputCloud(src_normals_ptr);
+  sift.compute(src_keypoints);
+
+  cout << "Found " << src_keypoints.points.size () << " SIFT keypoints in source cloud\n";
+ 
+  pcl::PointCloud<pcl::PointWithScale>::Ptr tar_keypoints_ptr (new pcl::PointCloud<pcl::PointWithScale>);
+  pcl::PointCloud<pcl::PointWithScale>& tar_keypoints = *tar_keypoints_ptr;
+  sift.setInputCloud(tar_normals_ptr);
+  sift.compute(tar_keypoints);
+
+  cout << "Found " << tar_keypoints.points.size () << " SIFT keypoints in target cloud\n";
   
   // --------------------------------------------
   // -----Open 3D viewer and add point cloud-----
   // --------------------------------------------
   pcl::visualization::PCLVisualizer viewer ("3D Viewer");
   viewer.setBackgroundColor (0, 0, 0);
-  pcl::visualization::PointCloudColorHandlerCustom<pcl::PointWithRange> src_range_image_color_handler (src_range_image_ptr, 255, 255, 0);
-  pcl::visualization::PointCloudColorHandlerCustom<pcl::PointWithRange> tar_range_image_color_handler (tar_range_image_ptr, 0, 255, 255);
-  viewer.addPointCloud (src_range_image_ptr, src_range_image_color_handler, "source range image");
-  viewer.addPointCloud (tar_range_image_ptr, tar_range_image_color_handler, "target range image");
-  viewer.setPointCloudRenderingProperties (pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 1, "source range image");
-  viewer.setPointCloudRenderingProperties (pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 1, "target range image");
-  //viewer.addCoordinateSystem (1.0f, "global");
-  //PointCloudColorHandlerCustom<PointType> source_cloud_color_handler (source_cloud_ptr, 150, 150, 150);
-  //viewer.addPointCloud (source_cloud_ptr, source_cloud_color_handler, "original point cloud");
+  pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZ> src_cloud_color_handler (source_cloud_ptr, 255, 255, 0);
+  pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZ> tar_cloud_color_handler (target_cloud_ptr, 0, 255, 255);
+  viewer.addPointCloud (source_cloud_ptr, src_cloud_color_handler, "source cloud");
+  viewer.addPointCloud (target_cloud_ptr, tar_cloud_color_handler, "target cloud");
+  viewer.setPointCloudRenderingProperties (pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 1, "source cloud");
+  viewer.setPointCloudRenderingProperties (pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 1, "target cloud");
   viewer.initCameraParameters ();
-  setViewerPose (viewer, src_range_image.getTransformationToWorldSystem ());
-  
-  
-  // --------------------------------
-  // -----Extract NARF keypoints-----
-  // --------------------------------
-  pcl::RangeImageBorderExtractor range_image_border_extractor;
-  pcl::NarfKeypoint narf_keypoint_detector;
-  narf_keypoint_detector.setRangeImageBorderExtractor (&range_image_border_extractor);
-  narf_keypoint_detector.setRangeImage (&src_range_image);
-  narf_keypoint_detector.getParameters ().support_size = support_size;
-  
-  pcl::PointCloud<int> src_keypoint_indices;
-  narf_keypoint_detector.compute (src_keypoint_indices);
-  std::cout << "Found "<<src_keypoint_indices.points.size ()<<" key points in source cloud.\n";
-
-  pcl::PointCloud<int> tar_keypoint_indices;
-  narf_keypoint_detector.setRangeImage (&tar_range_image);
-  narf_keypoint_detector.compute (tar_keypoint_indices);
-  std::cout << "Found "<<tar_keypoint_indices.points.size ()<<" key points in target cloud.\n";
+  setViewerPose (viewer, scene_sensor_pose);
   
   
   // -------------------------------------
   // -----Show keypoints in 3D viewer-----
   // -------------------------------------
-  pcl::PointCloud<pcl::PointXYZ>::Ptr src_keypoints_ptr (new pcl::PointCloud<pcl::PointXYZ>);
-  pcl::PointCloud<pcl::PointXYZ>& src_keypoints = *src_keypoints_ptr;
-  src_keypoints.points.resize (src_keypoint_indices.points.size ());
-  src_keypoints.width = src_keypoint_indices.points.size();
-  src_keypoints.height = 1;
-  for (size_t i=0; i<src_keypoint_indices.points.size (); ++i)
-    src_keypoints.points[i].getVector3fMap () = src_range_image.points[src_keypoint_indices.points[i]].getVector3fMap ();
-  pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZ> src_keypoints_color_handler (src_keypoints_ptr, 0, 255, 0);
-  viewer.addPointCloud<pcl::PointXYZ> (src_keypoints_ptr, src_keypoints_color_handler, "source keypoints");
-  viewer.setPointCloudRenderingProperties (pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 7, "source keypoints");
- 
 
-  pcl::PointCloud<pcl::PointXYZ>::Ptr tar_keypoints_ptr (new pcl::PointCloud<pcl::PointXYZ>);
-  pcl::PointCloud<pcl::PointXYZ>& tar_keypoints = *tar_keypoints_ptr;
-  tar_keypoints.points.resize (tar_keypoint_indices.points.size ());
-  tar_keypoints.width = tar_keypoint_indices.points.size();
-  tar_keypoints.height = 1;
-  for (size_t i=0; i<tar_keypoint_indices.points.size (); ++i)
-    tar_keypoints.points[i].getVector3fMap () = tar_range_image.points[tar_keypoint_indices.points[i]].getVector3fMap ();
-  pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZ> tar_keypoints_color_handler (tar_keypoints_ptr, 0, 255, 0);
-  viewer.addPointCloud<pcl::PointXYZ> (tar_keypoints_ptr, tar_keypoints_color_handler, "target keypoints");
+  pcl::visualization::PointCloudColorHandlerCustom<pcl::PointWithScale> src_keypoints_color_handler (src_keypoints_ptr, 255, 0, 0);
+  viewer.addPointCloud<pcl::PointWithScale> (src_keypoints_ptr, src_keypoints_color_handler, "source keypoints");
+  viewer.setPointCloudRenderingProperties (pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 7, "source keypoints");
+
+  pcl::visualization::PointCloudColorHandlerCustom<pcl::PointWithScale> tar_keypoints_color_handler (tar_keypoints_ptr, 0, 0, 255);
+  viewer.addPointCloud<pcl::PointWithScale> (tar_keypoints_ptr, tar_keypoints_color_handler, "target keypoints");
   viewer.setPointCloudRenderingProperties (pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 7, "target keypoints");
 
-  // ------------------------------------------------------
-  // -----Extract NARF descriptors for interest points-----
-  // ------------------------------------------------------
-  std::vector<int> src_keypoint_indices2;
-  src_keypoint_indices2.resize (src_keypoint_indices.points.size ());
-  for (unsigned int i=0; i<src_keypoint_indices.size (); ++i) // This step is necessary to get the right vector type
-    src_keypoint_indices2[i]=src_keypoint_indices.points[i];
-  pcl::NarfDescriptor src_narf_descriptor (&src_range_image, &src_keypoint_indices2);
-  src_narf_descriptor.getParameters ().support_size = support_size;
-  src_narf_descriptor.getParameters ().rotation_invariant = rotation_invariant;
-  pcl::PointCloud<pcl::Narf36> src_narf_descriptors;
-  src_narf_descriptor.compute (src_narf_descriptors);
-  cout << "Extracted "<<src_narf_descriptors.size ()<<" descriptors for "
-                      <<src_keypoint_indices.points.size ()<< " keypoints in source cloud.\n";
+
+  // Extract FPFH features from SIFT keypoints
   
-  std::vector<int> tar_keypoint_indices2;
-  tar_keypoint_indices2.resize (tar_keypoint_indices.points.size ());
-  for (unsigned int i=0; i<tar_keypoint_indices.size (); ++i) // This step is necessary to get the right vector type
-    tar_keypoint_indices2[i]=tar_keypoint_indices.points[i];
-  pcl::NarfDescriptor tar_narf_descriptor (&tar_range_image, &tar_keypoint_indices2);
-  tar_narf_descriptor.getParameters ().support_size = support_size;
-  tar_narf_descriptor.getParameters ().rotation_invariant = rotation_invariant;
-  pcl::PointCloud<pcl::Narf36>::Ptr tar_narf_descriptors_ptr (new pcl::PointCloud<pcl::Narf36>);
-  pcl::PointCloud<pcl::Narf36>& tar_narf_descriptors = *tar_narf_descriptors_ptr;
-  tar_narf_descriptor.compute (tar_narf_descriptors);
-  cout << "Extracted "<<tar_narf_descriptors.size ()<<" descriptors for "
-                      <<tar_keypoint_indices.points.size ()<< " keypoints in target cloud.\n";
+  pcl::PointCloud<pcl::PointXYZ>::Ptr src_keypoints_xyz (new pcl::PointCloud<pcl::PointXYZ>);                           
+  pcl::copyPointCloud (src_keypoints, *src_keypoints_xyz);
+  pcl::FPFHEstimation<pcl::PointXYZ, pcl::PointNormal, pcl::FPFHSignature33> fpfh;
+  fpfh.setSearchSurface (source_cloud_ptr);
+  fpfh.setInputCloud (src_keypoints_xyz);
+  fpfh.setInputNormals (src_normals_ptr);
+  fpfh.setSearchMethod (tree_n);
+  pcl::PointCloud<pcl::FPFHSignature33>::Ptr src_features_ptr (new pcl::PointCloud<pcl::FPFHSignature33>());
+  pcl::PointCloud<pcl::FPFHSignature33>& src_features = *src_features_ptr;
+  fpfh.setRadiusSearch(0.05);
+  fpfh.compute(src_features);
+  cout << "Computed " << src_features.size() << " FPFH features for source cloud\n";
+
+  pcl::PointCloud<pcl::PointXYZ>::Ptr tar_keypoints_xyz (new pcl::PointCloud<pcl::PointXYZ>);                           
+  pcl::copyPointCloud (tar_keypoints, *tar_keypoints_xyz);
+  fpfh.setSearchSurface (target_cloud_ptr);
+  fpfh.setInputCloud (tar_keypoints_xyz);
+  fpfh.setInputNormals (tar_normals_ptr);
+  pcl::PointCloud<pcl::FPFHSignature33>::Ptr tar_features_ptr (new pcl::PointCloud<pcl::FPFHSignature33>());
+  pcl::PointCloud<pcl::FPFHSignature33>& tar_features = *tar_features_ptr;
+  fpfh.compute(tar_features);
+  cout << "Computed " << tar_features.size() << " FPFH features for target cloud\n";
+  
   
 
-  //------------------------------------------------------------------
-  //------Use kd-tree nearest neighbor search on NARF descriptors------
-  //-------------------------------------------------------------------
-
-  pcl::KdTreeFLANN<pcl::Narf36> kdtree;
-  kdtree.setPointRepresentation (boost::make_shared<NARFpr>());
-  kdtree.setInputCloud(tar_narf_descriptors_ptr);
-  int k = 5;
-  std::vector<int> nkn_indices_i(k);
-  std::vector<float> nkn_sq_dists_i(k);
-  std::vector<int> nkn_indices(src_narf_descriptors.size());
-  std::vector<float> nkn_sq_dists(src_narf_descriptors.size());
-  for(size_t i = 0; i < src_narf_descriptors.size(); ++i)
-  {
-    cout << "Searching for " << k << " nearest neighbors of source descriptor " << i
-        << ":\nx: " << src_narf_descriptors.points[i].x
-        << "\ny: " << src_narf_descriptors.points[i].y
-        << "\nz: " << src_narf_descriptors.points[i].z << "\n";
-    kdtree.nearestKSearch (src_narf_descriptors.points[i], k, nkn_indices_i, nkn_sq_dists_i);
-    nkn_indices[i] = nkn_indices_i[0];
-    nkn_sq_dists[i] = nkn_sq_dists_i[0];
-    for (size_t j = 0; j < k; ++j)
-        cout << "index: " << nkn_indices_i[j]
-            << "     squared distance: " << nkn_sq_dists_i[j] << "\n";
-  }
-  cout << "Results:\n";
-  for(size_t i = 0; i < src_narf_descriptors.size(); ++i)
-  {
-      cout << "Source descriptor " << i << " corresponds to target descriptor "
-          << nkn_indices[i]
-          << " with a squared distance of " << nkn_sq_dists[i] << "\n";
-  }
-
-
-  //--------------------------------------
-  //------Reject bad correspondences------
-  //--------------------------------------
-
-  // Create original correspondences object
-  pcl::Correspondences original_correspondences;
-
-  // fill original correspondences object with indices and distances
-  for (size_t i; i < src_narf_descriptors.size(); ++i)
-  {
-      pcl::Correspondence correspondence(i, nkn_indices[i], nkn_sq_dists[i]);
-      original_correspondences.push_back(correspondence);
-  }
-
-  // Create filtered correspondences object
-  pcl::CorrespondencesPtr remaining_correspondences_ptr (new pcl::Correspondences);
-  pcl::Correspondences remaining_correspondences = *remaining_correspondences_ptr;
+  // Estimate correspondences of FPFH features
   
-  // Create correspondence rejector object
-  pcl::registration::CorrespondenceRejectorFeatures rejector;
-  // set feature representation
-  // set input source
-  // set input target
-  // set input correspondences
-  // get filtered correspondences / apply rejection (compare these two functions?)
+  pcl::CorrespondencesPtr correspondences_ptr (new pcl::Correspondences);
+  pcl::Correspondences correspondences = *correspondences_ptr;
+  pcl::registration::CorrespondenceEstimation<pcl::FPFHSignature33, pcl::FPFHSignature33> corr_est;
+  corr_est.setInputSource(src_features_ptr);
+  corr_est.setInputTarget(tar_features_ptr);
+  corr_est.determineReciprocalCorrespondences(correspondences);
 
 
-  float avg_sq_dist = std::accumulate(nkn_sq_dists.begin(),nkn_sq_dists.end(),0.0)/nkn_sq_dists.size();
-  cout << "Average nearest neighbor squared distance: " << avg_sq_dist << "\n";
 
-  std::vector<int> src_corr_indices;
-  std::vector<int> tar_corr_indices;
-
-  float thresh = 0.5;
-
-  for(size_t i = 0; i < src_narf_descriptors.size(); ++i)
-  {
-      if (nkn_sq_dists[i] < thresh)
-      {
-          pcl::Correspondence correspondence(i, nkn_indices[i], nkn_sq_dists[i]);
-          remaining_correspondences.push_back(correspondence);
-      }
-  }
-  cout << "Rejecting bad correspondences:\n";
-  for(size_t i = 0; i < remaining_correspondences.size(); ++i)
-  {
-      cout << "Source descriptor " << remaining_correspondences[i].index_query << " corresponds to target descriptor "
-          << remaining_correspondences[i].index_match
-          << " with a squared distance of " << remaining_correspondences[i].distance << "\n";
-  }
-
-  //TODO: reject duplicate correspondences
+  // Reject bad correspondences
 
 
-  //--------------------------------------
   //------Add features to visualizer------
-  //--------------------------------------
 
   pcl::PointXYZ src_pt;
   pcl::PointXYZ corr_pt;
-  for (size_t i; i < remaining_correspondences.size(); ++i)
+  for (size_t i; i < correspondences.size(); ++i)
   {
-      src_pt.x = src_narf_descriptors.points[remaining_correspondences[i].index_query].x;
-      src_pt.y = src_narf_descriptors.points[remaining_correspondences[i].index_query].y;
-      src_pt.z = src_narf_descriptors.points[remaining_correspondences[i].index_query].z;
+      src_pt.x = src_keypoints.points[correspondences[i].index_query].x;
+      src_pt.y = src_keypoints.points[correspondences[i].index_query].y;
+      src_pt.z = src_keypoints.points[correspondences[i].index_query].z;
       std::stringstream name1;
       name1 << "source point " << i;
-      viewer.addSphere<pcl::PointXYZ> (src_pt, 0.02, 255, 0, 0, name1.str());
+      //viewer.addSphere<pcl::PointXYZ> (src_pt, 0.02, 255, 0, 0, name1.str());
   
-      corr_pt.x = tar_narf_descriptors.points[remaining_correspondences[i].index_match].x;
-      corr_pt.y = tar_narf_descriptors.points[remaining_correspondences[i].index_match].y;
-      corr_pt.z = tar_narf_descriptors.points[remaining_correspondences[i].index_match].z;
+      corr_pt.x = tar_keypoints.points[correspondences[i].index_match].x;
+      corr_pt.y = tar_keypoints.points[correspondences[i].index_match].y;
+      corr_pt.z = tar_keypoints.points[correspondences[i].index_match].z;
       std::stringstream name2;
       name2 << "corresponding point " << i;
-      viewer.addSphere<pcl::PointXYZ> (corr_pt, 0.02, 0, 0, 255, name2.str());
-
-      std::stringstream name3;
-      name3 << "line" << i;
-      viewer.addLine<pcl::PointXYZ, pcl::PointXYZ> (src_pt, corr_pt, 255, 0, 255, name3.str());
+      //viewer.addSphere<pcl::PointXYZ> (corr_pt, 0.02, 0, 0, 255, name2.str());
+      cout << correspondences[i].distance << endl;
+      if (correspondences[i].distance < 1000000000)
+      {
+          std::stringstream name3;
+          name3 << "line" << i;
+          viewer.addLine<pcl::PointXYZ, pcl::PointXYZ> (src_pt, corr_pt, 255, 0, 255, name3.str());
+      }
   }
 
   //--------------------
