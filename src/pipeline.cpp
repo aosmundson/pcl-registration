@@ -64,6 +64,8 @@ main (int argc, char** argv)
   sor.filter(target_cloud);
   */
 
+  // Remove NaN points from point clouds
+  // (this is necessary to avoid a segfault when running ICP)
   std::vector<int> nan_idx;
   pcl::removeNaNFromPointCloud(source_cloud, source_cloud, nan_idx);
   pcl::removeNaNFromPointCloud(target_cloud, target_cloud, nan_idx);
@@ -119,9 +121,7 @@ main (int argc, char** argv)
 
   cout << "Found " << tar_keypoints.points.size () << " SIFT keypoints in target cloud\n";
   
-  // --------------------------------------------
-  // -----Open 3D viewer and add point cloud-----
-  // --------------------------------------------
+  // Open 3D viewer and add point cloud
   pcl::visualization::PCLVisualizer viewer ("3D Viewer");
   viewer.setBackgroundColor (0, 0, 0);
   int v1 (0);
@@ -138,9 +138,7 @@ main (int argc, char** argv)
   setViewerPose (viewer, scene_sensor_pose);
   
   
-  // -------------------------------------
-  // -----Show keypoints in 3D viewer-----
-  // -------------------------------------
+  // Show keypoints in 3D viewer
 
   pcl::visualization::PointCloudColorHandlerCustom<pcl::PointWithScale> src_keypoints_color_handler (src_keypoints_ptr, 255, 0, 0);
   viewer.addPointCloud<pcl::PointWithScale> (src_keypoints_ptr, src_keypoints_color_handler, "source keypoints", v1);
@@ -178,7 +176,7 @@ main (int argc, char** argv)
   
   
 
-
+  // Compute the transformation matrix for alignment
 
   Eigen::Matrix4f tform = Eigen::Matrix4f::Identity();
   tform = computeInitialAlignment (src_keypoints_ptr, src_features_ptr, tar_keypoints_ptr,
@@ -194,6 +192,7 @@ main (int argc, char** argv)
   pcl::transformPointCloud(source_cloud, transformed_cloud, tform);
   cout << "Calculated transformation\n";
 
+  // Add transformed point cloud to viewer
   pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZ> tf_cloud_color_handler (transformed_cloud_ptr, 0, 255, 0);
   viewer.addPointCloud<pcl::PointXYZ> (transformed_cloud_ptr, tf_cloud_color_handler, "initial aligned cloud", v2);
   //--------------------
