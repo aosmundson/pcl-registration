@@ -55,7 +55,7 @@ main (int argc, char** argv)
   }
   
   // Downsample input clouds
-  /*
+  /*  
   pcl::VoxelGrid<pcl::PointXYZ> sor;
   sor.setLeafSize (0.01f, 0.01f, 0.01f);
   sor.setInputCloud(source_cloud_ptr);
@@ -64,8 +64,12 @@ main (int argc, char** argv)
   sor.filter(target_cloud);
   */
 
+  std::vector<int> nan_idx;
+  pcl::removeNaNFromPointCloud(source_cloud, source_cloud, nan_idx);
+  pcl::removeNaNFromPointCloud(target_cloud, target_cloud, nan_idx);
+
   // Estimate cloud normals
-  cout << "Computing source cloud normals\n";
+  cout << "Computing source cloud normals... ";
   pcl::NormalEstimation<pcl::PointXYZ, pcl::PointNormal> ne;
   pcl::PointCloud<pcl::PointNormal>::Ptr src_normals_ptr (new pcl::PointCloud<pcl::PointNormal>);
   pcl::PointCloud<pcl::PointNormal>& src_normals = *src_normals_ptr;
@@ -82,7 +86,7 @@ main (int argc, char** argv)
       src_normals.points[i].z = source_cloud.points[i].z;
   }
 
-  cout << "Computing target cloud normals\n";
+  cout << "Computing target cloud normals... ";
   pcl::PointCloud<pcl::PointNormal>::Ptr tar_normals_ptr (new pcl::PointCloud<pcl::PointNormal>);
   pcl::PointCloud<pcl::PointNormal>& tar_normals = *tar_normals_ptr;
   ne.setInputCloud(target_cloud_ptr);
@@ -120,12 +124,16 @@ main (int argc, char** argv)
   // --------------------------------------------
   pcl::visualization::PCLVisualizer viewer ("3D Viewer");
   viewer.setBackgroundColor (0, 0, 0);
+  int v1 (0);
+  int v2 (1);
+  viewer.createViewPort (0.0, 0.0, 0.5, 1.0, v1);
+  viewer.createViewPort (0.5, 0.0, 1.0, 1.0, v2);
+
   pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZ> src_cloud_color_handler (source_cloud_ptr, 255, 255, 0);
   pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZ> tar_cloud_color_handler (target_cloud_ptr, 0, 255, 255);
-  viewer.addPointCloud (source_cloud_ptr, src_cloud_color_handler, "source cloud");
-  viewer.addPointCloud (target_cloud_ptr, tar_cloud_color_handler, "target cloud");
-  viewer.setPointCloudRenderingProperties (pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 1, "source cloud");
-  viewer.setPointCloudRenderingProperties (pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 1, "target cloud");
+  viewer.addPointCloud (source_cloud_ptr, src_cloud_color_handler, "source cloud v1", v1);
+  viewer.addPointCloud (target_cloud_ptr, tar_cloud_color_handler, "target cloud v1", v1);
+  viewer.addPointCloud (target_cloud_ptr, tar_cloud_color_handler, "target cloud v2", v2);
   viewer.initCameraParameters ();
   setViewerPose (viewer, scene_sensor_pose);
   
@@ -135,11 +143,11 @@ main (int argc, char** argv)
   // -------------------------------------
 
   pcl::visualization::PointCloudColorHandlerCustom<pcl::PointWithScale> src_keypoints_color_handler (src_keypoints_ptr, 255, 0, 0);
-  viewer.addPointCloud<pcl::PointWithScale> (src_keypoints_ptr, src_keypoints_color_handler, "source keypoints");
+  viewer.addPointCloud<pcl::PointWithScale> (src_keypoints_ptr, src_keypoints_color_handler, "source keypoints", v1);
   viewer.setPointCloudRenderingProperties (pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 7, "source keypoints");
 
   pcl::visualization::PointCloudColorHandlerCustom<pcl::PointWithScale> tar_keypoints_color_handler (tar_keypoints_ptr, 0, 0, 255);
-  viewer.addPointCloud<pcl::PointWithScale> (tar_keypoints_ptr, tar_keypoints_color_handler, "target keypoints");
+  viewer.addPointCloud<pcl::PointWithScale> (tar_keypoints_ptr, tar_keypoints_color_handler, "target keypoints", v1);
   viewer.setPointCloudRenderingProperties (pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 7, "target keypoints");
 
 
@@ -170,47 +178,24 @@ main (int argc, char** argv)
   
   
 
-  // Estimate correspondences of FPFH features
+
+
+  Eigen::Matrix4f tform = Eigen::Matrix4f::Identity();
+  tform = computeInitialAlignment (src_keypoints_ptr, src_features_ptr, tar_keypoints_ptr,
+          tar_features_ptr, min_sample_dist, max_correspondence_dist, nr_iters);
   
-  pcl::CorrespondencesPtr correspondences_ptr (new pcl::Correspondences);
-  pcl::Correspondences correspondences = *correspondences_ptr;
-  pcl::registration::CorrespondenceEstimation<pcl::FPFHSignature33, pcl::FPFHSignature33> corr_est;
-  corr_est.setInputSource(src_features_ptr);
-  corr_est.setInputTarget(tar_features_ptr);
-  corr_est.determineReciprocalCorrespondences(correspondences);
+  /* Uncomment this code to run ICP 
+  tform = refineAlignment (source_cloud_ptr, target_cloud_ptr, tform, max_correspondence_distance,
+          outlier_rejection_threshold, transformation_epsilon, max_iterations);
+  */
+ 
+  pcl::PointCloud<pcl::PointXYZ>::Ptr transformed_cloud_ptr (new pcl::PointCloud<pcl::PointXYZ>);
+  pcl::PointCloud<pcl::PointXYZ>& transformed_cloud = *transformed_cloud_ptr;
+  pcl::transformPointCloud(source_cloud, transformed_cloud, tform);
+  cout << "Calculated transformation\n";
 
-
-
-  // Reject bad correspondences
-
-
-  //------Add features to visualizer------
-
-  pcl::PointXYZ src_pt;
-  pcl::PointXYZ corr_pt;
-  for (size_t i; i < correspondences.size(); ++i)
-  {
-      src_pt.x = src_keypoints.points[correspondences[i].index_query].x;
-      src_pt.y = src_keypoints.points[correspondences[i].index_query].y;
-      src_pt.z = src_keypoints.points[correspondences[i].index_query].z;
-      std::stringstream name1;
-      name1 << "source point " << i;
-      //viewer.addSphere<pcl::PointXYZ> (src_pt, 0.02, 255, 0, 0, name1.str());
-  
-      corr_pt.x = tar_keypoints.points[correspondences[i].index_match].x;
-      corr_pt.y = tar_keypoints.points[correspondences[i].index_match].y;
-      corr_pt.z = tar_keypoints.points[correspondences[i].index_match].z;
-      std::stringstream name2;
-      name2 << "corresponding point " << i;
-      //viewer.addSphere<pcl::PointXYZ> (corr_pt, 0.02, 0, 0, 255, name2.str());
-      if (correspondences[i].distance < 100)
-      {
-          std::stringstream name3;
-          name3 << "line" << i;
-          viewer.addLine<pcl::PointXYZ, pcl::PointXYZ> (src_pt, corr_pt, 255, 0, 255, name3.str());
-      }
-  }
-
+  pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZ> tf_cloud_color_handler (transformed_cloud_ptr, 0, 255, 0);
+  viewer.addPointCloud<pcl::PointXYZ> (transformed_cloud_ptr, tf_cloud_color_handler, "initial aligned cloud", v2);
   //--------------------
   // -----Main loop-----
   //--------------------
