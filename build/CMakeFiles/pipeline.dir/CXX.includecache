@@ -6,7 +6,7 @@
 
 #IncludeRegexTransform: 
 
-/home/dongki/Desktop/alan/big_pkg/src/pipeline.cpp
+../include/pipeline.hpp
 iostream
 -
 numeric
@@ -39,6 +39,10 @@ pcl/registration/correspondence_estimation.h
 -
 pcl/filters/voxel_grid.h
 -
+
+/home/dongki/Desktop/alan/big_pkg/src/pipeline.cpp
+pipeline.hpp
+/home/dongki/Desktop/alan/big_pkg/src/pipeline.hpp
 
 /usr/include/eigen3/Eigen/Cholesky
 Core

@@ -45,6 +45,7 @@ set(CMAKE_CXX_TARGET_INCLUDE_PATH
   "/usr/include/x86_64-linux-gnu"
   "/usr/include/python2.7"
   "/usr/include/tcl"
+  "../include"
   "/usr/local/include/pcl-1.8"
   "/usr/include/eigen3"
   "/usr/include/ni"
