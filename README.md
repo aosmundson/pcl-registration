@@ -13,7 +13,6 @@ Once the keypoints and features have been estimated, they are used as input for 
 
 The program opens a PCL visualizer with two viewports. The left viewport displays the two input clouds and their SIFT keypoints, without any transformation. The right viewport displays the transformed source cloud and the original target cloud.
 
-![Point Cloud Visualization]
-(https://github.com/aosmundson/pcl-registration/tree/master/image/initial_alignment.png)
+![Point Cloud Visualization](https://github.com/aosmundson/pcl-registration/blob/master/image/initial_alignment.png)
 
 Parameters for keypoint detection and initial alignment can be tuned in the `include/pipeline.hpp` file.
