@@ -1,3 +1,0 @@
-/home/dongki/Desktop/alan/big_pkg/build/CMakeFiles/rebuild_cache.dir
-/home/dongki/Desktop/alan/big_pkg/build/CMakeFiles/edit_cache.dir
-/home/dongki/Desktop/alan/big_pkg/build/CMakeFiles/pipeline.dir

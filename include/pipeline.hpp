@@ -1,11 +1,8 @@
 #include <iostream>                                                
-#include <numeric>
-#include <boost/thread/thread.hpp>
 #include <pcl/io/pcd_io.h>
 #include <pcl/visualization/pcl_visualizer.h>
 #include <pcl/console/parse.h>
 #include <pcl/point_types.h>
-#include <pcl/kdtree/kdtree_flann.h>
 #include <pcl/common/io.h>
 #include <pcl/keypoints/sift_keypoint.h>
 #include <pcl/features/normal_3d.h>
@@ -17,15 +14,18 @@
 // --------------------
 // -----Parameters-----
 // --------------------
-const float min_scale = 0.01f;
-const int n_octaves = 3;
-const int n_scales_per_octave = 4;
-const float min_contrast = 0.001f;
+// SIFT Keypoint parameters
+const float min_scale = 0.01f; // the standard deviation of the smallest scale in the scale space
+const int n_octaves = 3;  // the number of octaves (i.e. doublings of scale) to compute
+const int n_scales_per_octave = 4; // the number of scales to compute within each octave
+const float min_contrast = 0.001f; // the minimum contrast required for detection
 
+// Sample Consensus Initial Alignment parameters (explanation below)
 const float min_sample_dist = 0.025f;
 const float max_correspondence_dist = 0.01f;
 const int nr_iters = 500;
 
+// ICP parameters (explanation below)
 const float max_correspondence_distance = 0.05f;
 const float outlier_rejection_threshold = 0.05f;
 const float transformation_epsilon = 0;
@@ -69,7 +69,8 @@ setViewerPose (pcl::visualization::PCLVisualizer& viewer, const Eigen::Affine3f&
  *   min_sample_distance
  *     The minimum distance between any two random samples
  *   max_correspondence_distance
- *     The 
+ *     The maximum distance between a point and its nearest neighbor correspondent in order to be considered
+ *     in the alignment process
  *   nr_interations
  *     The number of RANSAC iterations to perform
  * Return: A transformation matrix that will roughly align the points in source to the points in target
@@ -127,8 +128,7 @@ typedef pcl::PointCloud<ICPPointT>::Ptr ICPPointCloudPtr;
 Eigen::Matrix4f
 refineAlignment (const ICPPointCloudPtr & source_points, const ICPPointCloudPtr & target_points,
                  const Eigen::Matrix4f initial_alignment, float max_correspondence_distance,
-                 float outlier_rejection_threshold, float transformation_epsilon, float max_iterations)
-{
+                 float outlier_rejection_threshold, float transformation_epsilon, float max_iterations) {
 
   pcl::IterativeClosestPoint<ICPPointT, ICPPointT> icp;
   icp.setMaxCorrespondenceDistance (max_correspondence_distance);
